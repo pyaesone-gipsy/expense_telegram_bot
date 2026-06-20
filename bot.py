@@ -17,15 +17,28 @@ CATEGORY_KEYWORDS = {
     "utilities": ["electricity", "water", "internet", "phone", "bill", "utility"],
     "groceries": ["supermarket", "grocery", "market", "vegetable", "fruit", "rice", "meat"],
     "health": ["pharmacy", "clinic", "hospital", "doctor", "medicine", "drugstore"],
+    "telecom": ["atom", "package", "mins", "call", "data", "super", "mobile", "sms"],
+    "transfer": ["transfer", "p2p", "p2m", "send to", "receive", "trx", "transaction type"],
+    "bill": ["bill", "service", "subscription", "charge", "invoice"],
     "other": []
 }
 
 PROVIDER_KEYWORDS = {
-    "KBZ Pay": ["kbz", "kbz pay", "kbzpay"],
+    "KBZ Pay": ["kbz", "kbz pay", "kbzpay", "kbz bank"],
     "Wave Pay": ["wave", "wave pay", "wavepay"],
     "CB Bank": ["cb bank", "cbbank", "cb bank/pay"],
     "Mytel": ["mytel"],
     "CB Pay": ["cb pay", "cbpay"],
+    "ATOM": ["atom", "atom mobile", "super 15k"]
+}
+
+PROVIDER_CATEGORY_MAP = {
+    "KBZ Pay": "transfer",
+    "Wave Pay": "transfer",
+    "CB Bank": "transfer",
+    "CB Pay": "transfer",
+    "ATOM": "telecom",
+    "Mytel": "telecom"
 }
 
 AMOUNT_REGEX = re.compile(r"\b([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]{1,2})|[0-9]+(?:\.[0-9]{1,2}))\b")
@@ -56,6 +69,24 @@ def detect_provider(text: str) -> str:
         for keyword in keywords:
             if keyword in text:
                 return provider
+    return "Unknown"
+
+
+def detect_receiver(lines: list[str]) -> str:
+    keywords = ["transfer to", "pay to", "received by", "to:", "recipient", "receiver", "transfered to", "send to"]
+    for line in lines:
+        for keyword in keywords:
+            if keyword in line:
+                part = line.split(keyword, 1)[1].strip()
+                if part:
+                    return part.title()
+    # fallback: look for a name-like phrase on lines after transfer/recipient markers
+    for i, line in enumerate(lines):
+        if any(k in line for k in ["transfer", "recipient", "receiver", "pay to"]):
+            if i + 1 < len(lines):
+                next_line = lines[i + 1].strip()
+                if next_line:
+                    return next_line.title()
     return "Unknown"
 
 
@@ -104,8 +135,9 @@ def parse_expense_text(text: str) -> dict:
         date = today
 
     raw_text = " ".join(lines)
-    category = categorize_expense(raw_text)
     provider = detect_provider(raw_text)
+    receiver = detect_receiver(lines)
+    category = PROVIDER_CATEGORY_MAP.get(provider, categorize_expense(raw_text))
     status = "success" if amount and amount > 0 else "failed"
 
     return {
@@ -114,6 +146,7 @@ def parse_expense_text(text: str) -> dict:
         "date": date,
         "category": category,
         "provider": provider,
+        "receiver": receiver,
         "status": status,
         "raw_text": raw_text
     }
@@ -134,12 +167,13 @@ def build_csv_path():
 def export_to_csv(expenses):
     csv_path = build_csv_path()
     with open(csv_path, "w", encoding="utf-8", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=["date", "provider", "description", "amount", "category", "status"])
+        writer = csv.DictWriter(f, fieldnames=["date", "provider", "receiver", "description", "amount", "category", "status"])
         writer.writeheader()
         for item in expenses:
             writer.writerow({
                 "date": item.get("date", ""),
                 "provider": item.get("provider", ""),
+                "receiver": item.get("receiver", ""),
                 "description": item.get("description", ""),
                 "amount": item.get("amount", ""),
                 "category": item.get("category", ""),
@@ -161,11 +195,14 @@ def summarize_expenses(expenses):
 
     provider_counts = {}
     category_counts = {}
+    receiver_counts = {}
     for item in expenses:
         provider = item.get("provider", "Unknown")
         category = item.get("category", "other")
+        receiver = item.get("receiver", "Unknown")
         provider_counts[provider] = provider_counts.get(provider, 0) + 1
         category_counts[category] = category_counts.get(category, 0) + 1
+        receiver_counts[receiver] = receiver_counts.get(receiver, 0) + 1
 
     return {
         "total": total,
@@ -175,7 +212,8 @@ def summarize_expenses(expenses):
         "success": success_count,
         "failed": failed_count,
         "providers": sorted(provider_counts.items(), key=lambda x: x[1], reverse=True),
-        "categories": sorted(category_counts.items(), key=lambda x: x[1], reverse=True)
+        "categories": sorted(category_counts.items(), key=lambda x: x[1], reverse=True),
+        "receivers": sorted(receiver_counts.items(), key=lambda x: x[1], reverse=True)
     }
 
 
@@ -206,7 +244,9 @@ def help_command(update: Update, context: CallbackContext):
         "/report - View a summary report\n"
         "/search <query> - Search your receipts\n"
         "/top - Show top providers and categories\n"
-        "/export - Export expenses as CSV"
+        "/export - Export expenses as CSV\n"
+        "\n"
+        "The bot extracts provider, receiver, category, amount, and date from receipts."
     )
 
 
@@ -240,6 +280,9 @@ def report_command(update: Update, context: CallbackContext):
     lines.append("")
     lines.append("📊 Top Categories:")
     lines += [f"• {name}: {count} receipts" for name, count in summary['categories'][:3]]
+    lines.append("")
+    lines.append("👥 Top Receivers:")
+    lines += [f"• {name}: {count} receipts" for name, count in summary['receivers'][:3]]
 
     update.message.reply_text("\n".join(lines))
 
@@ -254,6 +297,7 @@ def stats_command(update: Update, context: CallbackContext):
     top_providers = format_top_items(summary['providers'], prefix="• ")
     top_categories = format_top_items(summary['categories'], prefix="• ")
 
+    top_receivers = format_top_items(summary['receivers'], prefix="• ")
     lines = [
         "📈 Expense Analytics",
         f"This Month: {summary['month_total']} receipts | {format_mmk(summary['month_amount'])}",
@@ -263,7 +307,10 @@ def stats_command(update: Update, context: CallbackContext):
         *(top_providers if top_providers else ["• None found"]),
         "",
         "Top Categories:",
-        *(top_categories if top_categories else ["• None found"])
+        *(top_categories if top_categories else ["• None found"]),
+        "",
+        "Top Receivers:",
+        *(top_receivers if top_receivers else ["• None found"])
     ]
     update.message.reply_text("\n".join(lines))
 
@@ -271,7 +318,7 @@ def stats_command(update: Update, context: CallbackContext):
 def search_command(update: Update, context: CallbackContext):
     query = " ".join(context.args).strip().lower()
     if not query:
-        update.message.reply_text("Usage: /search <query>\nSearch provider, category, merchant, or date.")
+        update.message.reply_text("Usage: /search <query>\nSearch provider, receiver, category, merchant, or date.")
         return
 
     expenses = load_expenses()
@@ -279,6 +326,7 @@ def search_command(update: Update, context: CallbackContext):
     for item in expenses:
         haystack = " ".join([
             item.get("provider", ""),
+            item.get("receiver", ""),
             item.get("category", ""),
             item.get("description", ""),
             item.get("raw_text", ""),
@@ -294,7 +342,7 @@ def search_command(update: Update, context: CallbackContext):
     response = [f"Found {len(matches)} receipts matching '{query}':"]
     for item in matches[:5]:
         response.append(
-            f"• {item.get('date')} | {item.get('provider')} | {item.get('category')} | {format_mmk(item.get('amount', 0))}"
+            f"• {item.get('date')} | {item.get('provider')} | {item.get('receiver')} | {item.get('category')} | {format_mmk(item.get('amount', 0))}"
         )
     if len(matches) > 5:
         response.append(f"...and {len(matches) - 5} more.")
@@ -367,6 +415,7 @@ def photo_handler(update: Update, context: CallbackContext):
         f"Date: {expense['date']}\n"
         f"Amount: {format_mmk(expense['amount'])}\n"
         f"Provider: {expense['provider']}\n"
+        f"Receiver: {expense['receiver']}\n"
         f"Category: {expense['category']}\n"
         f"Description: {expense['description']}"
     )
