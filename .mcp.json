@@ -1,0 +1,14 @@
+{
+  "name": "telegram-expense-bot",
+  "displayName": "Telegram Expense Receipt Bot",
+  "description": "A Claude Code-friendly Telegram bot project for receipt OCR, expense categorization, and export.",
+  "version": "0.1.0",
+  "main": "bot.py",
+  "scripts": {
+    "start": "python bot.py"
+  },
+  "claude": {
+    "skill": "expense-bot",
+    "agent": "expense-bot"
+  }
+}
